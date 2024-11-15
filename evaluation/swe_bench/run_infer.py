@@ -36,8 +36,8 @@ from openhands.events.action import CmdRunAction, MessageAction
 from openhands.events.observation import CmdOutputObservation, ErrorObservation
 from openhands.events.serialization.event import event_to_dict
 from openhands.runtime.base import Runtime
-from openhands.runtime.utils.shutdown_listener import sleep_if_should_continue
 from openhands.utils.async_utils import call_async_from_sync
+from openhands.utils.shutdown_listener import sleep_if_should_continue
 
 USE_HINT_TEXT = os.environ.get('USE_HINT_TEXT', 'false').lower() == 'true'
 USE_INSTANCE_IMAGE = os.environ.get('USE_INSTANCE_IMAGE', 'false').lower() == 'true'
@@ -146,7 +146,7 @@ def get_config(
             api_key=os.environ.get('ALLHANDS_API_KEY', None),
             remote_runtime_api_url=os.environ.get('SANDBOX_REMOTE_RUNTIME_API_URL'),
             keep_remote_runtime_alive=False,
-            remote_runtime_init_timeout=1800,
+            remote_runtime_init_timeout=3600,
         ),
         # do not mount workspace
         workspace_base=None,
@@ -534,5 +534,10 @@ if __name__ == '__main__':
             instances[col] = instances[col].apply(lambda x: str(x))
 
     run_evaluation(
-        instances, metadata, output_file, args.eval_num_workers, process_instance
+        instances,
+        metadata,
+        output_file,
+        args.eval_num_workers,
+        process_instance,
+        timeout_seconds=120 * 60,  # 2 hour PER instance should be more than enough
     )
