@@ -8,6 +8,7 @@ import {
   GitHubAccessTokenResponse,
   ErrorResponse,
   GetConfigResponse,
+  GetVSCodeUrlResponse,
 } from "./open-hands.types";
 
 class OpenHands {
@@ -173,6 +174,21 @@ class OpenHands {
       },
       true,
     );
+  }
+
+  /**
+   * Get the VSCode URL
+   * @returns VSCode URL
+   */
+  static async getVSCodeUrl(): Promise<GetVSCodeUrlResponse> {
+    return request(`/api/vscode-url`, {}, false, false, 1);
+  }
+
+  static async getRuntimeId(): Promise<{ runtime_id: string }> {
+    const response = await request("/api/config");
+    const data = await response.json();
+
+    return data;
   }
 }
 
