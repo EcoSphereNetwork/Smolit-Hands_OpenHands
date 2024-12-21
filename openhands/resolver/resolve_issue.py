@@ -199,7 +199,7 @@ async def process_issue(
     )
     config.set_llm_config(llm_config)
 
-    runtime = create_runtime(config, sid=f'{issue.number}')
+    runtime = create_runtime(config)
     await runtime.connect()
 
     async def on_event(evt):
@@ -242,25 +242,25 @@ async def process_issue(
         metrics = None
         success = False
         comment_success = None
-        success_explanation = 'Agent failed to run'
+        result_explanation = 'Agent failed to run'
         last_error = 'Agent failed to run or crashed'
     else:
         histories = [dataclasses.asdict(event) for event in state.history]
         metrics = state.metrics.get() if state.metrics else None
         # determine success based on the history and the issue description
-        success, comment_success, success_explanation = issue_handler.guess_success(
-            issue, state.history, llm_config
+        success, comment_success, result_explanation = issue_handler.guess_success(
+            issue, state.history
         )
 
         if issue_handler.issue_type == 'pr' and comment_success:
             success_log = 'I have updated the PR and resolved some of the issues that were cited in the pull request review. Specifically, I identified the following revision requests, and all the ones that I think I successfully resolved are checked off. All the unchecked ones I was not able to resolve, so manual intervention may be required:\n'
             try:
-                explanations = json.loads(success_explanation)
+                explanations = json.loads(result_explanation)
             except json.JSONDecodeError:
                 logger.error(
-                    f'Failed to parse success_explanation as JSON: {success_explanation}'
+                    f'Failed to parse result_explanation as JSON: {result_explanation}'
                 )
-                explanations = [str(success_explanation)]  # Use raw string as fallback
+                explanations = [str(result_explanation)]  # Use raw string as fallback
 
             for success_indicator, explanation in zip(comment_success, explanations):
                 status = (
@@ -284,19 +284,19 @@ async def process_issue(
         metrics=metrics,
         success=success,
         comment_success=comment_success,
-        success_explanation=success_explanation,
+        result_explanation=result_explanation,
         error=last_error,
     )
     return output
 
 
 def issue_handler_factory(
-    issue_type: str, owner: str, repo: str, token: str
+    issue_type: str, owner: str, repo: str, token: str, llm_config: LLMConfig
 ) -> IssueHandlerInterface:
     if issue_type == 'issue':
-        return IssueHandler(owner, repo, token)
+        return IssueHandler(owner, repo, token, llm_config)
     elif issue_type == 'pr':
-        return PRHandler(owner, repo, token)
+        return PRHandler(owner, repo, token, llm_config)
     else:
         raise ValueError(f'Invalid issue type: {issue_type}')
 
@@ -315,6 +315,7 @@ async def resolve_issue(
     repo_instruction: str | None,
     issue_number: int,
     comment_id: int | None,
+    target_branch: str | None = None,
     reset_logger: bool = False,
 ) -> None:
     """Resolve a single github issue.
@@ -333,19 +334,25 @@ async def resolve_issue(
         repo_instruction: Repository instruction to use.
         issue_number: Issue number to resolve.
         comment_id: Optional ID of a specific comment to focus on.
+        target_branch: Optional target branch to create PR against (for PRs).
         reset_logger: Whether to reset the logger for multiprocessing.
     """
-    issue_handler = issue_handler_factory(issue_type, owner, repo, token)
+    issue_handler = issue_handler_factory(issue_type, owner, repo, token, llm_config)
 
     # Load dataset
     issues: list[GithubIssue] = issue_handler.get_converted_issues(
-        comment_id=comment_id
+        issue_numbers=[issue_number], comment_id=comment_id
     )
 
-    # Find the specific issue
-    issue = next((i for i in issues if i.number == issue_number), None)
-    if not issue:
-        raise ValueError(f'Issue {issue_number} not found')
+    if not issues:
+        raise ValueError(
+            f'No issues found for issue number {issue_number}. Please verify that:\n'
+            f'1. The issue/PR #{issue_number} exists in the repository {owner}/{repo}\n'
+            f'2. You have the correct permissions to access it\n'
+            f'3. The repository name is spelled correctly'
+        )
+
+    issue = issues[0]
 
     if comment_id is not None:
         if (
@@ -425,14 +432,31 @@ async def resolve_issue(
     try:
         # checkout to pr branch if needed
         if issue_type == 'pr':
+            branch_to_use = target_branch if target_branch else issue.head_branch
             logger.info(
-                f'Checking out to PR branch {issue.head_branch} for issue {issue.number}'
+                f'Checking out to PR branch {target_branch} for issue {issue.number}'
             )
 
+            if not branch_to_use:
+                raise ValueError('Branch name cannot be None')
+
+            # Fetch the branch first to ensure it exists locally
+            fetch_cmd = ['git', 'fetch', 'origin', branch_to_use]
             subprocess.check_output(
-                ['git', 'checkout', f'{issue.head_branch}'],
+                fetch_cmd,
                 cwd=repo_dir,
             )
+
+            # Checkout the branch
+            checkout_cmd = ['git', 'checkout', branch_to_use]
+            subprocess.check_output(
+                checkout_cmd,
+                cwd=repo_dir,
+            )
+
+            # Update issue's base_branch if using custom target branch
+            if target_branch:
+                issue.base_branch = target_branch
 
             base_commit = (
                 subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo_dir)
@@ -556,6 +580,12 @@ def main():
         choices=['issue', 'pr'],
         help='Type of issue to resolve, either open issue or pr comments.',
     )
+    parser.add_argument(
+        '--target-branch',
+        type=str,
+        default=None,
+        help="Target branch to pull and create PR against (for PRs). If not specified, uses the PR's base branch.",
+    )
 
     my_args = parser.parse_args()
 
@@ -616,6 +646,7 @@ def main():
             repo_instruction=repo_instruction,
             issue_number=my_args.issue_number,
             comment_id=my_args.comment_id,
+            target_branch=my_args.target_branch,
         )
     )
 
